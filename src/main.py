@@ -1,7 +1,7 @@
 import sys
 
 import pygame
-from collections import deque
+from collections import deque, defaultdict
 from pydantic import BaseModel, Field
 import random
 
@@ -94,7 +94,6 @@ while running:
             end_grid_y = end_y // 10
 
             selected_area = (end_grid_x - start_grid_x + 1) * (end_grid_y - start_grid_y + 1)
-            from collections import defaultdict
 
             total_color_square = defaultdict(int)
             for x in range(0, 100):
