@@ -1,9 +1,9 @@
 import sys
-
 import pygame
 from collections import deque, defaultdict
 from pydantic import BaseModel, Field
 import random
+import numpy as np
 
 
 
@@ -66,10 +66,59 @@ dragging = False
 start_pos = None
 end_pos = None
 
+
+
+def bot_function(grid, color):
+
+    grid_np = np.array(grid)
+
+    color_indices = np.array(np.where((grid_np == color).all(axis=-1))).tolist()
+
+    color_zone = list(zip(color_indices[0], color_indices[1]))
+
+    if len(color_zone) == 0:
+        print(f"No {color} zone found.")
+        return
+
+    start_pos = random.choice(color_zone)
+    start_x, start_y = start_pos
+
+    end_x = start_x + random.randint(-10, 10)
+    end_y = start_y + random.randint(-10, 10)
+    end_x = min(max(end_x, 0), 49)
+    end_y = min(max(end_y, 0), 49)
+    end_pos = (end_x, end_y)
+
+    if start_x > end_x:
+        start_x, end_x = end_x, start_x
+    if start_y > end_y:
+        start_y, end_y = end_y, start_y
+
+    selected_area = (end_x - start_x + 1) * (end_y - start_y + 1)
+
+    total_color_square = defaultdict(int)
+    for x in range(50):
+        for y in range(50):
+            total_color_square[tuple(grid[x][y])] += 1
+
+    if selected_area <= total_color_square[tuple(color)]:
+        for x in range(start_x, end_x + 1):
+            for y in range(start_y, end_y + 1):
+                if 0 <= x < 50 and 0 <= y < 50:
+                    grid[x][y] = color
+    else:
+        print(f"Selected area cannot be greater than total {color} square.")
+
+
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        bot_function(grid, [255, 215, 0])
+        bot_function(grid, [255, 0, 0])
+        bot_function(grid, [0, 255, 0])
+        bot_function(grid, [0, 150, 255])
+
         def set_color(grid, start_x, start_y):
             color = grid[start_x // 10][start_y // 10]
             return color
@@ -116,7 +165,7 @@ while running:
                     inner_color_count = 0
                     for x in range(0, 50):
                         for y in range(0, 50):
-                            if grid[x][y] == start_color:
+                            if (grid[x][y] == tuple(start_color)).all():
                                 inner_color_count += 1
                                 if inner_color_count <= selected_area:
                                     grid[x][y] = (255, 255, 255)
@@ -126,12 +175,9 @@ while running:
                         if inner_color_count > selected_area:
                             break
             else:
-
                 print("Selected area cannot be greater than total color square.")
                 text = font.render("Selected area cannot be greater than total color square.", True, (0, 0, 0))
                 screen.blit(text, (0, 0))
-
-
 
 
         for x in range(50):
@@ -153,70 +199,60 @@ while running:
                 pygame.draw.rect(screen, grid[x][y], (x * 10, y * 10, 10, 10))
                 pygame.draw.rect(screen, (44, 44, 44), (x *10, y *10, 12, 12), 1)
 
-
-
-
-    def flood_fill(grid, start_coord):
-
-        queue = deque([start_coord])
-        visited = set()
-        color = grid[start_coord[0]][start_coord[1]]
-
-        while queue:
-            x, y = queue.popleft()
-            if (x, y) in visited:
-                continue
-            visited.add((x, y))
-
-
-            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
-                new_x, new_y = x + dx, y + dy
-                if 0 <= new_x < len(grid) and 0 <= new_y < len(grid[0]) and grid[new_x][new_y] == color:
-                    queue.append((new_x, new_y))
-
-        return visited
+    np_grid = np.array(grid)
+    non_white_pixels = np.transpose(np.where(np.any(np_grid != (255, 255, 255), axis=-1))).tolist()
+    visited = set()
 
 
     color_islands = []
-    visited = set()
 
-    for x in range(50):
-        for y in range(50):
-            if (x, y) not in visited:
-                color = grid[x][y]
-                if color != (255, 255, 255):
-                    island = flood_fill(grid, (x, y))
-                    color_islands.append(island)
-                    visited.update(island)
+    def dfs(x, y, color, grid, visited, color_island, surrounded_by_diff_color):
+        stack = [(x, y)]
+        visited.add((x, y))
+
+        while stack:
+            x, y = stack.pop()
+            color_island.append((x, y))
+            for dx, dy in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                new_x, new_y = x + dx, y + dy
+                if (new_x, new_y) in visited:
+                    continue
+                if new_x >= 0 and new_x < grid.shape[0] and new_y >= 0 and new_y < grid.shape[1]:
+                    if tuple(grid[new_x, new_y]) == color:
+                        visited.add((new_x, new_y))
+                        stack.append((new_x, new_y))
+                    else:
+                        surrounded_by_diff_color[0] = True
 
 
-    def get_center(color_island):
-        x_coords = [x for x, y in color_island]
-        y_coords = [y for x, y in color_island]
-        center_x = int(sum(x_coords) / len(x_coords))
-        center_y = int(sum(y_coords) / len(y_coords))
-        return center_x, center_y
+
+    for x, y in non_white_pixels:
+        if (x, y) not in visited:
+            color = tuple(grid[x][y])
+            color_island = []
+            surrounded_by_diff_color = [False]
+            grid = np.array(grid)
+            dfs(x, y, color, grid, visited, color_island, surrounded_by_diff_color)
+            if surrounded_by_diff_color[0]:
+                color_islands.append(color_island)
 
 
-    color_islands_dict = {}
-    rendered_islands = set()
+
     for color_island in color_islands:
-        center_x, center_y = get_center(color_island)
-        color_name = get_color_name(grid[center_x][center_y])
+        if surrounded_by_diff_color[0]:
 
-        color_island = tuple(color_island)
-        if color_island not in rendered_islands:
-            if color_island in color_islands_dict:
-                text, coord = color_islands_dict[color_island]
-                text = font.render(color_name, True, (0, 0, 0))
-                coord = (center_x * 10, center_y * 10)
-            else:
-                text = font.render(color_name, True, (0, 0, 0))
-                coord = (center_x * 10, center_y * 10)
-                color_islands_dict[color_island] = (text, coord)
+            x_coords = [x for x, y in color_island]
+            y_coords = [y for x, y in color_island]
+            center_x = int(sum(x_coords) / len(x_coords))
+            center_y = int(sum(y_coords) / len(y_coords))
+            color_name = get_color_name(grid[center_x][center_y].tolist())
 
+
+            text = font.render(color_name, True, (0, 0, 0))
+            coord = (center_x * 10, center_y * 10)
             screen.blit(text, coord)
-            rendered_islands.add(color_island)
+
+
 
     pygame.display.update()
     pygame.display.flip()
