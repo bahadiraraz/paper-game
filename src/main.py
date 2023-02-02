@@ -93,28 +93,31 @@ def bot_function(color):
 
     start_x, end_x = np.sort([start_x, end_x])
     start_y, end_y = np.sort([start_y, end_y])
-
     selected_area = (end_x - start_x + 1) * (end_y - start_y + 1)
-
-    total_color_square = np.count_nonzero(grid == color)
+    total_color_square = np.sum((grid == color).all(axis=2))
 
     if selected_area <= total_color_square:
-        grid[start_x : end_x + 1, start_y : end_y + 1] = color
+        probability = random.random()
+        if probability <= 0.9:
+            grid[start_x : end_x + 1, start_y : end_y + 1] = color
+        else:
+            color_indices = np.where((grid == color).all(axis=2))
+            color_indices = list(
+                zip(
+                    color_indices[0][:selected_area],
+                    color_indices[1][:selected_area],
+                )
+            )
+            for x, y in color_indices:
+                grid[x][y] = (255, 255, 255)
     else:
-        print(f"Selected area cannot be greater than total {color} square.")
+        print("Selected area cannot be greater than total color square.")
 
 
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        for i in [
-            top_left_color,
-            top_right_color,
-            bottom_left_color,
-            bottom_right_color,
-        ]:
-            bot_function(i)
 
         def set_color(grid, pos):
             color = grid[pos[0] // 10, pos[1] // 10]
@@ -126,6 +129,12 @@ while running:
             dragging = True
 
         if event.type == pygame.MOUSEBUTTONUP:
+            for i in [
+                top_right_color,
+                bottom_left_color,
+                bottom_right_color,
+            ]:
+                bot_function(i)
             end_pos = event.pos
             dragging = False
 
@@ -147,7 +156,7 @@ while running:
 
             if selected_area < total_color_square:
                 probability = random.random()
-                if probability <= 0.99:
+                if probability <= 0.9:
                     grid[
                         start_grid_x : end_grid_x + 1, start_grid_y : end_grid_y + 1
                     ] = start_color
