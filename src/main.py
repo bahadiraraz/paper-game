@@ -1,12 +1,9 @@
-import sys
-import time
-
-import pygame
-from collections import deque, defaultdict
-from pydantic import BaseModel, Field
 import random
-import numpy as np
+import sys
 
+import numpy as np
+import pygame
+from pydantic import BaseModel, Field
 
 
 class MapConfig(BaseModel):
@@ -22,6 +19,7 @@ class MapConfig(BaseModel):
     font_size: int = Field(20, ge=1, le=100)
     font_type: str = Field("arial")
 
+
 pygame.init()
 MapConfig = MapConfig()
 
@@ -31,8 +29,11 @@ top_left_color = MapConfig.top_left_color
 top_right_color = MapConfig.top_right_color
 bottom_left_color = MapConfig.bottom_left_color
 bottom_right_color = MapConfig.bottom_right_color
-grid = np.full((MapConfig.grid_size * MapConfig.scale, MapConfig.grid_size * MapConfig.scale, 3), (255, 255, 255))
-font = pygame.font.Font(MapConfig.font_type, MapConfig.font_size)
+grid = np.full(
+    (MapConfig.grid_size * MapConfig.scale, MapConfig.grid_size * MapConfig.scale, 3),
+    (255, 255, 255),
+)
+font = pygame.font.SysFont(MapConfig.font_type, MapConfig.font_size)
 
 
 def get_color_name(color):
@@ -52,22 +53,28 @@ player_size = MapConfig.player_size * MapConfig.scale
 
 for i in range(grid_size):
     for j in range(grid_size):
-        if (i > color_size*2 and i < color_size*3) and (j > color_size*2 and j < color_size*3):
+        if (i > color_size * 2 and i < color_size * 3) and (
+            j > color_size * 2 and j < color_size * 3
+        ):
             grid[i][j] = top_left_color
-        elif (i > color_size*6 and i < color_size*7) and (j > color_size*2 and j < color_size*3):
+        elif (i > color_size * 6 and i < color_size * 7) and (
+            j > color_size * 2 and j < color_size * 3
+        ):
             grid[i][j] = top_right_color
-        elif (i > color_size*2 and i < color_size*3) and (j > color_size*6 and j < color_size*7):
+        elif (i > color_size * 2 and i < color_size * 3) and (
+            j > color_size * 6 and j < color_size * 7
+        ):
             grid[i][j] = bottom_left_color
-        elif (i > color_size*6 and i < color_size*7) and (j > color_size*6 and j < color_size*7):
+        elif (i > color_size * 6 and i < color_size * 7) and (
+            j > color_size * 6 and j < color_size * 7
+        ):
             grid[i][j] = bottom_right_color
-
 
 
 running = True
 dragging = False
 start_pos = None
 end_pos = None
-
 
 
 def bot_function(color):
@@ -82,33 +89,36 @@ def bot_function(color):
     start_x, start_y = start_pos
     end_x = np.clip(start_x + np.random.randint(-10, 11), 0, 49)
     end_y = np.clip(start_y + np.random.randint(-10, 11), 0, 49)
-    end_pos = (end_x, end_y)
+    end_pos = (end_x, end_y)  # noqa F841
 
     start_x, end_x = np.sort([start_x, end_x])
     start_y, end_y = np.sort([start_y, end_y])
-
     selected_area = (end_x - start_x + 1) * (end_y - start_y + 1)
-
-    total_color_square = np.count_nonzero(grid == color)
+    total_color_square = np.sum((grid == color).all(axis=2))
 
     if selected_area <= total_color_square:
-        grid[start_x:end_x + 1, start_y:end_y + 1] = color
-
-
-
-
-
-
-
+        probability = random.random()
+        if probability <= 0.9:
+            grid[start_x : end_x + 1, start_y : end_y + 1] = color
+        else:
+            color_indices = np.where((grid == color).all(axis=2))
+            color_indices = list(
+                zip(
+                    color_indices[0][:selected_area],
+                    color_indices[1][:selected_area],
+                )
+            )
+            for x, y in color_indices:
+                grid[x][y] = (255, 255, 255)
     else:
-        print(f"Selected area cannot be greater than total {color} square.")
+        print("Selected area cannot be greater than total color square.")
+
 
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
-        for i in [top_left_color, top_right_color, bottom_left_color, bottom_right_color]:
-            bot_function(i)
+
         def set_color(grid, pos):
             color = grid[pos[0] // 10, pos[1] // 10]
             return color
@@ -119,6 +129,12 @@ while running:
             dragging = True
 
         if event.type == pygame.MOUSEBUTTONUP:
+            for i in [
+                top_right_color,
+                bottom_left_color,
+                bottom_right_color,
+            ]:
+                bot_function(i)
             end_pos = event.pos
             dragging = False
 
@@ -133,22 +149,29 @@ while running:
 
             start_grid_x, start_grid_y = start_x // 10, start_y // 10
             end_grid_x, end_grid_y = end_x // 10, end_y // 10
-            selected_area = (end_grid_x - start_grid_x + 1) * (end_grid_y - start_grid_y + 1)
+            selected_area = (end_grid_x - start_grid_x + 1) * (
+                end_grid_y - start_grid_y + 1
+            )
             total_color_square = np.sum((grid == start_color).all(axis=2))
 
             if selected_area < total_color_square:
                 probability = random.random()
-                if probability <= 0.99:
-                    grid[start_grid_x:end_grid_x+1, start_grid_y:end_grid_y+1] = start_color
+                if probability <= 0.9:
+                    grid[
+                        start_grid_x : end_grid_x + 1, start_grid_y : end_grid_y + 1
+                    ] = start_color
                 else:
                     color_indices = np.where((grid == start_color).all(axis=2))
-                    color_indices = list(zip(color_indices[0][:selected_area], color_indices[1][:selected_area]))
+                    color_indices = list(
+                        zip(
+                            color_indices[0][:selected_area],
+                            color_indices[1][:selected_area],
+                        )
+                    )
                     for x, y in color_indices:
                         grid[x][y] = (255, 255, 255)
             else:
                 print("Selected area cannot be greater than total color square.")
-
-
 
         for x in range(50):
             for y in range(50):
@@ -163,14 +186,19 @@ while running:
 
                     dragged_area = (start_x, start_y, end_x - start_x, end_y - start_y)
                     pygame.draw.rect(screen, (0, 0, 255), dragged_area, 1)
-                    text = font.render(f"{int(dragged_area[2] / 7)} x {int(dragged_area[3] / 7)}", True, (0, 0, 0))
+                    text = font.render(
+                        f"{int(dragged_area[2] / 7)} x {int(dragged_area[3] / 7)}",
+                        True,
+                        (0, 0, 0),
+                    )
                     screen.blit(text, (dragged_area[0], dragged_area[1] - 30))
 
                 pygame.draw.rect(screen, grid[x][y], (x * 10, y * 10, 10, 10))
-                pygame.draw.rect(screen, (44, 44, 44), (x *10, y *10, 12, 12), 1)
+                pygame.draw.rect(screen, (44, 44, 44), (x * 10, y * 10, 12, 12), 1)
 
-
-    non_white_pixels = np.transpose(np.where(np.any(grid != (255, 255, 255), axis=-1))).tolist()
+    non_white_pixels = np.transpose(
+        np.where(np.any(grid != (255, 255, 255), axis=-1))
+    ).tolist()
     visited = set()
     color_islands = []
 
@@ -185,14 +213,17 @@ while running:
                 new_x, new_y = x + dx, y + dy
                 if (new_x, new_y) in visited:
                     continue
-                if new_x >= 0 and new_x < grid.shape[0] and new_y >= 0 and new_y < grid.shape[1]:
+                if (
+                    new_x >= 0
+                    and new_x < grid.shape[0]
+                    and new_y >= 0
+                    and new_y < grid.shape[1]
+                ):
                     if tuple(grid[new_x, new_y]) == color:
                         visited.add((new_x, new_y))
                         stack.append((new_x, new_y))
                     else:
                         surrounded_by_diff_color[0] = True
-
-
 
     for x, y in non_white_pixels:
         if (x, y) not in visited:
@@ -219,6 +250,8 @@ pygame.quit()
 
 screen_width = 1000
 screen_height = 1000
+
+
 def start_screen():
     screen.fill((255, 255, 255))
 
@@ -238,7 +271,6 @@ def start_screen():
     screen.blit(quit_text, quit_rect)
     pygame.display.flip()
 
-
     while True:
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -247,12 +279,12 @@ def start_screen():
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 pos = pygame.mouse.get_pos()
                 if play_rect.collidepoint(pos):
-                    #TODO: add main game loop
+                    # TODO: add main game loop
                     pass
                 elif quit_rect.collidepoint(pos):
                     pygame.quit()
                     sys.exit()
 
+
 if __name__ == "__main__":
     start_screen()
-
