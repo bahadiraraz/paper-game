@@ -1,13 +1,14 @@
 import random
 import sys
+import time
+from threading import Thread
 
 import numpy as np
 import pygame
-from keras.layers import Dense
-from keras.models import Sequential
-from keras.optimizers import Adam
+import scipy
+import torch
+import torch.nn as nn
 from pydantic import BaseModel, Field
-from tensorflow.keras.models import load_model
 
 
 class MapConfig(BaseModel):
@@ -25,7 +26,7 @@ class MapConfig(BaseModel):
 pygame.init()
 MapConfig = MapConfig()
 
-grid_size = 1000
+grid_size = 100
 player_size = MapConfig.player_size
 
 if grid_size % player_size != 0:
@@ -41,30 +42,16 @@ pygame.display.set_caption(MapConfig.caption)
 
 font = pygame.font.SysFont(MapConfig.font_type, MapConfig.font_size)
 
-grid_size = 80
+grid_size = 100
 color_size = int(grid_size * 0.06)
-
-for i in range(grid_size):
-    for j in range(grid_size):
-        if (i > color_size * 2 and i < color_size * 3) and (
-            j > color_size * 2 and j < color_size * 3
-        ):
-            grid[i][j] = MapConfig.top_left_color
-        elif (i > color_size * 6 and i < color_size * 7) and (
-            j > color_size * 2 and j < color_size * 3
-        ):
-            grid[i][j] = MapConfig.top_right_color
-        elif (i > color_size * 2 and i < color_size * 3) and (
-            j > color_size * 6 and j < color_size * 7
-        ):
-            grid[i][j] = MapConfig.bottom_left_color
-        elif (i > color_size * 6 and i < color_size * 7) and (
-            j > color_size * 6 and j < color_size * 7
-        ):
-            grid[i][j] = MapConfig.bottom_right_color
-
-
 player_size = 5
+
+
+grid[:player_size, :player_size] = MapConfig.top_left_color
+grid[:player_size, -player_size:] = MapConfig.top_right_color
+grid[-player_size:, :player_size] = MapConfig.bottom_left_color
+grid[-player_size:, -player_size:] = MapConfig.bottom_right_color
+
 actions = [
     (x, y, x + player_size - 1, y + player_size - 1)
     for x in range(0, grid_size - player_size + 1, player_size)
@@ -88,7 +75,8 @@ dragging = False
 start_pos = None
 end_pos = None
 
-colors = [
+
+COLORS = [
     np.array([255, 0, 0]),
     np.array([0, 255, 0]),
     np.array([0, 150, 255]),
@@ -96,13 +84,31 @@ colors = [
 ]
 
 
+class DQN(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(DQN, self).__init__()
+        self.fc1 = nn.Linear(state_dim, 64)
+        self.fc2 = nn.Linear(64, 128)
+        self.fc3 = nn.Linear(128, 64)
+        self.fc4 = nn.Linear(64, 32)
+        self.fc5 = nn.Linear(32, action_dim)
+
+    def forward(self, x):
+        x = nn.functional.relu(self.fc1(x))
+        x = nn.functional.relu(self.fc2(x))
+        x = nn.functional.relu(self.fc3(x))
+        x = nn.functional.relu(self.fc4(x))
+        x = self.fc5(x)
+        return x
+
+
 def get_state(grid, color):
     color_mask = (grid == color).all(axis=2)
     color_total_area = np.sum(color_mask)
     if color_total_area == 0:
-        return [0, 0, 0]
+        return np.zeros((1, 5))  # Return a zero vector with shape (1, 5)
     color_mean = np.mean(grid[color_mask], axis=0) / 255
-    opponent_colors = [c for c in colors if not np.array_equal(c, color)]
+    opponent_colors = [c for c in COLORS if not np.array_equal(c, color)]
     opponent_total_area = 0
     for opponent_color in opponent_colors:
         opponent_mask = (grid == opponent_color).all(axis=2)
@@ -115,216 +121,301 @@ def get_state(grid, color):
             color_mean[2],
             opponent_total_area / (100 * 100),
         ]
-    )
+    ).reshape(1, 5)
 
 
-def ai_function(color, grid):
-    opponent_colors = [c for c in colors if not np.array_equal(c, color)]
+def ai_function(color, grid, model, actions, eps):
+    opponent_colors = [c for c in COLORS if not np.array_equal(c, color)]
     opponent_colors = [
         c
         for c in opponent_colors
         if np.any((grid == c).all(axis=2) & (grid == color).all(axis=2))
     ]
-    while True:
-        color_mask = (grid == color).all(axis=2)
-        color_total_area = np.sum(color_mask)
-        if color_total_area == 0:
-            print(f"No {color} zone found.")
-            continue
 
-        if color_total_area > (grid.shape[0] * grid.shape[1]) / 2:
-            min_opponent_area = float("inf")
-            min_opponent_pos = None
-            for opponent_color in opponent_colors:
-                opponent_mask = (grid == opponent_color).all(axis=2)
-                opponent_area = np.sum(opponent_mask)
-                if opponent_area < min_opponent_area:
-                    opponent_indices = np.argwhere(opponent_mask)
-                    color_indices = np.argwhere(color_mask)
-                    distances = np.sqrt(
-                        np.sum(
-                            (opponent_indices[:, np.newaxis, :] - color_indices) ** 2,
-                            axis=-1,
-                        )
-                    )
-                    min_distance = np.min(distances)
-                    if np.isfinite(min_distance):
-                        min_opponent_area = opponent_area
-                        min_opponent_pos = opponent_indices[np.argmin(distances)]
-            if min_opponent_pos is not None:
-                start_x, start_y = min_opponent_pos
-                max_area = min_opponent_area
-                print(f"{color} zone is too big. Starting to eat smaller areas.")
-            else:
-                start_pos = np.argwhere(color_mask)[np.random.randint(color_total_area)]
-                start_x, start_y = start_pos
-                max_area = color_total_area
+    color_mask = (grid == color).all(axis=2)
+    color_total_area = np.sum(color_mask)
+    # calculate distance from center of map
+    map_center = np.array([grid.shape[0] // 2, grid.shape[1] // 2])
+    color_center = np.mean(np.argwhere(color_mask), axis=0)
+    color_distance = np.linalg.norm(color_center - map_center)
+
+    # adjust eps based on distance from center
+    eps_adjustment = 1.0 + 0.1 * (color_distance / max(map_center))
+    eps *= eps_adjustment
+    if color_total_area == 0:
+        print(f"No {color} zone found.")
+        return 0, 0, 0, True
+    max_area = min(color_total_area // 2 + 10, np.count_nonzero(color_mask))
+
+    target_opponent_color = None
+    if color_total_area > (grid.shape[0] * grid.shape[1]) / 2:
+        # Find the smallest opponent color nearby
+        min_opponent_area = float("inf")
+        target_opponent_color = None
+        for opponent_color in opponent_colors:
+            opponent_mask = (grid == opponent_color).all(axis=2)
+            opponent_area = np.sum(opponent_mask)
+            if opponent_area < min_opponent_area:
+                min_opponent_area = opponent_area
+                target_opponent_color = opponent_color
+
+        if target_opponent_color is not None:
+            # Find the edge of the smallest opponent color
+            opponent_mask = (grid == target_opponent_color).all(axis=2)
+            edge_mask = (
+                scipy.ndimage.morphology.binary_dilation(opponent_mask) & ~opponent_mask
+            )
+            edge_points = np.argwhere(edge_mask)
+            start_pos = edge_points[np.random.randint(len(edge_points))]
+            start_x, start_y = start_pos
+            print(
+                f"{color} zone is too big. Starting to eat the edges of the smallest opponent color."
+            )
         else:
             start_pos = np.argwhere(color_mask)[np.random.randint(color_total_area)]
             start_x, start_y = start_pos
-            max_area = color_total_area
+    else:
+        start_pos = np.argwhere(color_mask)[np.random.randint(color_total_area)]
+        start_x, start_y = start_pos
 
+    # Move towards the center of the smallest opponent color
+    if target_opponent_color is not None:
+        opponent_mask = (grid == target_opponent_color).all(axis=2)
+        opponent_center = np.mean(np.argwhere(opponent_mask), axis=0)
+        dx, dy = opponent_center - np.array([start_x, start_y])
+        if dx > 0:
+            end_x = np.clip(start_x + np.random.randint(1, dx + 1), 0, 99)
+        else:
+            end_x = np.clip(start_x - np.random.randint(1, -dx + 1), 0, 99)
+        if dy > 0:
+            end_y = np.clip(start_y + np.random.randint(1, dy + 1), 0, 99)
+        else:
+            end_y = np.clip(start_y - np.random.randint(1, -dy + 1), 0, 99)
+    else:
         end_x = np.clip(start_x + np.random.randint(1, max_area + 1), 0, 99)
         end_y = np.clip(start_y + np.random.randint(1, max_area + 1), 0, 99)
 
-        start_x, end_x = np.sort([start_x, end_x])
-        start_y, end_y = np.sort([start_y, end_y])
-        selected_area = (end_x - start_x + 1) * (end_y - start_y + 1)
+    start_x, end_x = np.sort([start_x, end_x])
+    start_y, end_y = np.sort([start_y, end_y])
+    selected_area = np.abs((end_x - start_x + 1) * (end_y - start_y + 1))
+    grid_mask = np.zeros_like(grid)
+    grid_mask[start_x : end_x + 1, start_y : end_y + 1] = 1
+    white_mask = (grid == (255, 255, 255)).all(axis=2)[..., np.newaxis]
+    opponent_mask = np.zeros_like(grid_mask)
 
-        if selected_area > color_total_area:
-            print("Selected area is greater than the maximum available area.")
-            continue
-        elif selected_area <= 0:
-            print("Selected area cannot be zero.")
-            continue
-
-        grid_mask = np.zeros_like(grid)
-        grid_mask[start_x : end_x + 1, start_y : end_y + 1] = 1
-        white_mask = (grid == (255, 255, 255)).all(axis=2)[..., np.newaxis]
-        opponent_mask = np.zeros_like(grid_mask)
-        for opponent_color in opponent_colors:
-            opponent_mask |= (grid == opponent_color).all(axis=2)[..., np.newaxis]
-            if (grid_mask & opponent_mask).any():
-                print("Selected area overlaps with opponent color.")
-                continue
-            elif (grid_mask & (grid != color).all(axis=2)[..., np.newaxis]).any():
-                print("Selected area overlaps with existing color.")
-                continue
-            elif (grid_mask & white_mask).sum() < selected_area:
-                print("Selected area overlaps with existing color.")
-                continue
-        reward = get_reward(grid, color, start_x, start_y, end_x, end_y)
-
-        if selected_area > color_total_area:
-            print("Selected area is greater than the color's total area.")
-            reward -= 0.5
-        elif (grid_mask & (grid != color).all(axis=2)[..., np.newaxis]).any():
-            print("Selected area contains opponent color.")
-            reward += 0.5
-            if selected_area == color_total_area:
-                reward += 1.0
-        elif (grid_mask & white_mask).sum() == selected_area:
-            print("Selected area contains only white spots.")
-            reward += 0.2
-        else:
-            print("Selected area is invalid.")
-            reward -= 0.2
-
-        probability = random.random()
-        if probability <= 0.999:
-            grid[start_x : end_x + 1, start_y : end_y + 1] = color
-            print("Area bought.")
-            return color_total_area, selected_area, reward
-        else:
-            grid_mask = np.zeros_like(grid)
-            color_indices = np.where((grid == color).all(axis=2))
-            color_indices = list(
-                zip(color_indices[0][:selected_area], color_indices[1][:selected_area])
+    for opponent_color in opponent_colors:
+        opponent_mask |= (grid == opponent_color).all(axis=2)[..., np.newaxis]
+        if (
+            (grid_mask & opponent_mask).any()
+            or (grid_mask & (grid != color).all(axis=2)[..., np.newaxis]).any()
+            or (grid_mask & white_mask).sum() < selected_area
+        ):
+            print(
+                "Selected area overlaps with opponent color or existing color or white spots."
             )
-            for x, y in color_indices:
-                grid[x, y] = (255, 255, 255)
-            print("Area not bought.")
-            return color_total_area, 0, 0
+            continue
+    reward = get_reward(grid, color, start_x, start_y, end_x, end_y)
+    if selected_area <= color_total_area and reward > 0:
+        grid[start_x : end_x + 1, start_y : end_y + 1] = color
+        print(
+            f"Area bought. selected_area={selected_area}, color_total_area={color_total_area}, reward={reward} ✅"
+        )
+        return color_total_area, selected_area, reward
+    else:
+        print(
+            f"Area not bought. selected_area={selected_area}, color_total_area={color_total_area}, reward={reward} ❌"
+        )
+        return color_total_area, selected_area, reward
 
 
-def select_action(model, state, actions):
-    state = np.asarray(state)
-    state = state.reshape(1, -1)
-    try:
-        q_values = model.predict(state)
-        action = np.argmax(q_values[0])
-        return actions[action]
-    except ValueError:
-        print("ValueError: Cannot select action.")
-        return None
+def select_action(model, state, actions, eps):
+    state = torch.Tensor(state).unsqueeze(0)
+    q_values = model(state).detach().numpy()
+    if random.random() < eps:
+        action = random.choice(actions)
+    else:
+        action = actions[np.argmax(q_values)]
+    return action
 
 
 def get_reward(grid, color, start_x, start_y, end_x, end_y):
-    start_grid_x, start_grid_y = start_x // 10, start_y // 10
-    end_grid_x, end_grid_y = end_x // 10, end_y // 10
-    selected_area = (end_grid_x - start_grid_x + 1) * (end_grid_y - start_grid_y + 1)
+    selected_area = (end_x - start_x + 1) * (end_y - start_y + 1)
     total_color_square = np.sum((grid == color).all(axis=2))
     white_mask = (grid == (255, 255, 255)).all(axis=2)
 
+    if total_color_square == 10000:
+        reward = 1.0
+        return reward
     if selected_area > total_color_square:
         reward = -1.0
-    elif (white_mask[start_x : end_x + 1, start_y : end_y + 1]).all():
-        reward = -0.5
+        return reward
     else:
         reward = 0.2
         captured_opponent = False
         has_white = (white_mask[start_x : end_x + 1, start_y : end_y + 1]).any()
         has_color = (
-            (grid[start_x : end_x + 1, start_y : end_y + 1] != color).all(axis=2)
-            & ~white_mask[start_x : end_x + 1, start_y : end_y + 1]
+            (grid[start_x : end_x + 1, start_y : end_y + 1] == color).all(axis=2)
         ).any()
+
+        if (
+            total_color_square > 0
+            and selected_area >= total_color_square * 0.5
+            and has_color
+        ):
+            reward += 0.7
+
+        if (
+            total_color_square > 0
+            and selected_area >= total_color_square * 0.75
+            and has_color
+        ):
+            reward += 0.8
+
         if has_white and has_color:
-            reward += 0.1
-        for opponent_color in [c for c in colors if not np.array_equal(c, color)]:
-            opponent_mask = (grid == opponent_color).all(axis=2)
-            opponent_total_square = np.sum(opponent_mask)
-            if (
-                opponent_total_square > 0
-                and (opponent_mask[start_x : end_x + 1, start_y : end_y + 1]).any()
-            ):
-                captured_opponent = True
-                reward += 0.5
-                break
-        if not captured_opponent and not has_white and not has_color:
-            reward -= 0.1
+            reward += 0.4
+            return reward
+
+        if has_color:
+            reward -= 0.3
+            return reward
+
+        for c in COLORS:
+            if not np.array_equal(c, color):
+                if (
+                    (grid[start_x : end_x + 1, start_y : end_y + 1] == c).all(axis=2)
+                ).any() and has_color:
+                    reward += 0.8
+                    captured_opponent = True
+                    return reward
+
+            if not np.array_equal(c, color):
+                if (
+                    (
+                        (grid[start_x : end_x + 1, start_y : end_y + 1] == c).all(
+                            axis=2
+                        )
+                    ).any()
+                    and has_color
+                    and has_white
+                ):
+                    reward += 0.7
+                    captured_opponent = True
+                    return reward
+
         if selected_area == 0:
-            reward -= 0.5
-        if (grid != color).all(axis=2).any():
-            reward -= 0.1
+            reward -= 0.2
+            return reward
+
+        if (grid[start_x : end_x + 1, start_y : end_y + 1] == color).all(axis=2).all():
+            reward -= 0.2
+            return reward
+
+        if (grid[start_x : end_x + 1, start_y : end_y + 1] != color).all(
+            axis=2
+        ).any() or (grid[start_x : end_x + 1, start_y : end_y + 1] == color).all(
+            axis=2
+        ).all():
+            reward -= 0.3
 
     return reward
 
 
-def train_model(model, grid, color, actions, episodes):
+def train_model(model, grid, color, actions, episodes, optimizer, loss_fn):
     color = np.array(color)
     for episode in range(episodes):
+        print("Episode: ", episode, "color: ", color)
+        eps = max(0.1, 0.95 - 0.05 * episode)
         state = get_state(grid, color)
-        action = select_action(model, state, actions)
+        action = select_action(model, state, actions, 0.9999)
         if action is not None:
-            start_x, start_y = action[0] * 10, action[1] * 10
-            end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
-            ai_function(color, grid)
-            reward = get_reward(grid, color, start_x, start_y, end_x, end_y)
-            next_state = get_state(grid, color)
-            model.fit(
-                np.array(state).reshape(1, -1),
-                np.array(
-                    [
-                        reward
-                        + 0.99
-                        * np.max(model.predict(np.array(next_state).reshape(1, -1)))
-                    ]
-                ),
-                epochs=1,
-                verbose=0,
-            )
-
-        if np.sum((grid == color).all(axis=2)) == 7000:
-            print(f"{color} has captured the whole map!")
-            break
+            try:
+                start_x, start_y = action[0] * 10, action[1] * 10
+                end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
+                _, selected_area, reward = ai_function(color, grid, model, actions, eps)
+                next_state = get_state(grid, color)
+                target = reward + 0.99 * np.max(
+                    model(torch.Tensor(next_state).unsqueeze(0)).detach().numpy()
+                )
+                target_tensor = torch.Tensor([[target]])
+                loss = loss_fn(model(torch.Tensor(state).unsqueeze(0)), target_tensor)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+            except ValueError:
+                pass
+            if np.sum((grid == color).all(axis=2)) == 0:
+                print(f"{color} has lost the game!")
+                break
+    time.sleep(0.001)
 
 
-def train_models():
-    models = [Sequential() for _ in range(4)]
-    for model in models:
-        model.add(Dense(24, input_dim=5, activation="relu"))  # Updated input_dim to 5
-        model.add(Dense(48, activation="relu"))
-        model.add(Dense(3, activation="linear"))
-        model.compile(loss="mse", optimizer=Adam(learning_rate=0.001))
+def train_models_threaded(models, grid, colors, actions, episodes, optimizers, loss_fn):
+    threads = []
+    for i, (color, model, optimizer) in enumerate(zip(colors, models, optimizers)):
+        thread = Thread(
+            target=train_model,
+            args=(model, grid, color, actions, episodes, optimizer, loss_fn),
+        )
+        thread.start()
+        threads.append(thread)
+        time.sleep(0.1)
 
-    for color, model in zip(colors, models):
-        train_model(model, grid, np.array(color), actions, episodes=1000)
+    for thread in threads:
+        thread.join()
+        time.sleep(0.1)
+
     for i, model in enumerate(models):
-        model.save(f"model_{i}.h5")
+        torch.save(model.state_dict(), f"model_{i}.pth")
 
 
-models = [load_model(f"model_{i}.h5") for i in range(4)]
+models = [torch.nn.Sequential() for _ in range(4)]
+for model in models:
+    model.add_module("fc1", torch.nn.Linear(5, 24))
+    model.add_module("relu1", torch.nn.ReLU())
+    model.add_module("fc2", torch.nn.Linear(24, 48))
+    model.add_module("relu2", torch.nn.ReLU())
+    model.add_module("fc3", torch.nn.Linear(48, 3))
+optimizer1 = torch.optim.Adam(models[0].parameters(), lr=0.001)
+optimizer2 = torch.optim.Adam(models[1].parameters(), lr=0.001)
+optimizer3 = torch.optim.Adam(models[2].parameters(), lr=0.001)
+optimizer4 = torch.optim.Adam(models[3].parameters(), lr=0.001)
+optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
+loss_fn = torch.nn.MSELoss()
+
+train_models_threaded(
+    models,
+    grid,
+    COLORS,
+    actions,
+    episodes=10000,
+    optimizers=optimizers,
+    loss_fn=loss_fn,
+)
+
+
+def get_local_models(num_models):
+    models = []
+    for i in range(num_models):
+        model_path = f"model_{i}.pth"
+        model = torch.nn.Sequential()
+        model.add_module("fc1", torch.nn.Linear(5, 24))
+        model.add_module("relu1", torch.nn.ReLU())
+        model.add_module("fc2", torch.nn.Linear(24, 48))
+        model.add_module("relu2", torch.nn.ReLU())
+        model.add_module("fc3", torch.nn.Linear(48, 3))
+        model.load_state_dict(torch.load(model_path))
+        model.eval()
+        models.append(model)
+    return models
+
+
 while running:
+    for color, model in zip(COLORS, models):
+        state = get_state(grid, color)
+        action = select_action(model, state, actions, 0.999)
+        start_x, start_y = action[0] * 10, action[1] * 10
+        end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
+        ai_function(color, grid, model, actions, 0.999)
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
@@ -334,16 +425,7 @@ while running:
             return color
 
         if event.type == pygame.MOUSEBUTTONDOWN:
-            for model in models:
-                for color in colors:
-                    state = get_state(grid, color)
-                    action = select_action(model, state, actions)
-                    if action is not None:
-                        start_x, start_y = action[0] * 10, action[1] * 10
-                        end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
-                        ai_function(color, grid)
             start_color = set_color(grid, event.pos)
-
             start_pos = event.pos
             dragging = True
 
