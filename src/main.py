@@ -26,6 +26,7 @@ class MapConfig(BaseModel):
 pygame.init()
 MapConfig = MapConfig()
 
+
 grid_size = 100
 player_size = MapConfig.player_size
 
@@ -37,7 +38,7 @@ grid = np.full(
     (255, 255, 255),
 )
 screen_size = grid_size * player_size
-screen = pygame.display.set_mode((MapConfig.window_size, MapConfig.window_size))
+screen = pygame.display.set_mode((MapConfig.window_size + 200, MapConfig.window_size))
 pygame.display.set_caption(MapConfig.caption)
 
 font = pygame.font.SysFont(MapConfig.font_type, MapConfig.font_size)
@@ -82,6 +83,31 @@ COLORS = [
     np.array([0, 150, 255]),
     np.array([255, 215, 0]),
 ]
+# Define the size of the color count text box
+color_count_box_width = 200
+color_count_box_height = screen_size // 2
+
+# Define the starting position of the color count text box
+color_count_box_x = MapConfig.window_size
+color_count_box_y = screen_size // 8
+
+# Fill the color count text box with white color
+pygame.draw.rect(
+    screen, (255, 255, 255), (color_count_box_x, 0, color_count_box_width, screen_size)
+)
+
+# Print the number of squares for each color, one below the other
+for i, color in enumerate(COLORS):
+    num_squares = np.count_nonzero(np.all(grid == color, axis=2))
+    color_name = get_color_name(color.tolist())
+    color_text = f"{color_name}: {num_squares}"
+    color_text_render = font.render(color_text, True, (0, 0, 0))
+    color_text_rect = color_text_render.get_rect()
+    color_text_rect.center = (
+        color_count_box_x + color_count_box_width // 2,
+        color_count_box_y + i * color_count_box_height // 2,
+    )
+    screen.blit(color_text_render, color_text_rect)
 
 
 class DQN(nn.Module):
@@ -251,7 +277,6 @@ def get_reward(grid, color, start_x, start_y, end_x, end_y):
         return reward
     else:
         reward = 0.2
-        captured_opponent = False
         has_white = (white_mask[start_x : end_x + 1, start_y : end_y + 1]).any()
         has_color = (
             (grid[start_x : end_x + 1, start_y : end_y + 1] == color).all(axis=2)
@@ -285,7 +310,6 @@ def get_reward(grid, color, start_x, start_y, end_x, end_y):
                     (grid[start_x : end_x + 1, start_y : end_y + 1] == c).all(axis=2)
                 ).any() and has_color:
                     reward += 0.8
-                    captured_opponent = True
                     return reward
 
             if not np.array_equal(c, color):
@@ -299,7 +323,6 @@ def get_reward(grid, color, start_x, start_y, end_x, end_y):
                     and has_white
                 ):
                     reward += 0.7
-                    captured_opponent = True
                     return reward
 
         if selected_area == 0:
@@ -382,15 +405,15 @@ optimizer4 = torch.optim.Adam(models[3].parameters(), lr=0.001)
 optimizers = [optimizer1, optimizer2, optimizer3, optimizer4]
 loss_fn = torch.nn.MSELoss()
 
-train_models_threaded(
-    models,
-    grid,
-    COLORS,
-    actions,
-    episodes=10000,
-    optimizers=optimizers,
-    loss_fn=loss_fn,
-)
+# train_models_threaded(
+#    models,
+#    grid,
+#    COLORS,
+#    actions,
+#    episodes=10000,
+#    optimizers=optimizers,
+#    loss_fn=loss_fn,
+# )
 
 
 def get_local_models(num_models):
@@ -410,17 +433,14 @@ def get_local_models(num_models):
 
 
 while running:
-    for color, model in zip(COLORS, models):
-        state = get_state(grid, color)
-        action = select_action(model, state, actions, 0.999)
-        start_x, start_y = action[0] * 10, action[1] * 10
-        end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
-        ai_function(color, grid, model, actions, 0.999)
+    initial_counts = [np.sum((grid == color).all(axis=2)) for color in COLORS]
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
 
         def set_color(grid, pos):
+            if pos[0] > 1000 or pos[1] > 1000:
+                return None
             color = grid[pos[0] // 10, pos[1] // 10]
             return color
 
@@ -430,6 +450,43 @@ while running:
             dragging = True
 
         if event.type == pygame.MOUSEBUTTONUP:
+            # Update scoreboard on the left
+            for color, model in zip(COLORS, models):
+                state = get_state(grid, color)
+                action = select_action(model, state, actions, 0.999)
+                start_x, start_y = action[0] * 10, action[1] * 10
+                end_x, end_y = action[2] * 10 + 9, action[3] * 10 + 9
+                ai_function(color, grid, model, actions, 0.999)
+            pygame.draw.rect(
+                screen,
+                (255, 255, 255),
+                (color_count_box_x, 0, color_count_box_width, screen_size),
+            )
+            for i, color in enumerate(COLORS):
+                num_squares = np.count_nonzero(np.all(grid == color, axis=2))
+                color_name = get_color_name(color.tolist())
+                color_text = f"{color_name}: {num_squares}"
+                color_text_render = font.render(color_text, True, (0, 0, 0))
+                color_text_rect = color_text_render.get_rect()
+                color_text_rect.center = (
+                    color_count_box_x + color_count_box_width // 2,
+                    color_count_box_y + i * (color_count_box_height // 2),
+                )
+                pygame.draw.line(
+                    screen,
+                    (200, 200, 200),
+                    (color_count_box_x - 200, color_text_rect.centery + 3 * 10),
+                    (
+                        color_count_box_x + color_count_box_width,
+                        color_text_rect.centery + 3 * 10,
+                    ),
+                    1,
+                )
+                if num_squares - initial_counts[i] > 0:
+                    color_text_render = font.render(color_text, True, (0, 255, 0))
+                elif num_squares - initial_counts[i] < 0:
+                    color_text_render = font.render(color_text, True, (255, 0, 0))
+                screen.blit(color_text_render, color_text_rect)
             end_pos = event.pos
             dragging = False
 
