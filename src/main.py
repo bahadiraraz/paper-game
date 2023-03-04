@@ -91,7 +91,7 @@ color_count_box_height = screen_size // 2
 color_count_box_x = MapConfig.window_size
 color_count_box_y = screen_size // 8
 
-# Fill the color count text box with white color
+
 pygame.draw.rect(
     screen, (255, 255, 255), (color_count_box_x, 0, color_count_box_width, screen_size)
 )
